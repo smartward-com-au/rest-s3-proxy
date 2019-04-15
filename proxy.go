@@ -89,6 +89,8 @@ func getAllEnvVariables() {
 	awsRegion = getEnvOrDefault("AWS_REGION", "eu-west-1", false)
 	awsBucketPostfix = getEnvOrDefault("AWS_BUCKET_POSTFIX", "", true)
 	pathPrepend = getEnvOrDefault("PATH_PREPEND", "/", false)
+
+    // These would be mandatory in docker, but this code also needs to run using EC2 permissions
 	// getEnvOrDefault("AWS_ACCESS_KEY_ID", "", true)
 	// getEnvOrDefault("AWS_SECRET_ACCESS_KEY", "", true)
 
