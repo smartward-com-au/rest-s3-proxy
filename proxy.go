@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	"strconv"
 	// Time
@@ -21,6 +22,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+
+	// Hashing
+	"crypto/sha256"
 )
 
 var (
@@ -37,9 +41,28 @@ var (
 	port string
 
 	// AWS settings
-	awsRegion, awsBucket string
-	s3Session            *s3.S3
+	awsRegion,
+	awsBucketPostfix,
+	pathPrepend string
+	s3Session *s3.S3
 )
+
+func splitToBucketAndPath(path string) (string, string, error) {
+	stripPrepend := strings.SplitN(path, pathPrepend, 2)
+	if len(stripPrepend) != 2 {
+		return "", "", fmt.Errorf("Unable to strip prepend off of: %s. Expected it to start with: %s", path, pathPrepend)
+	}
+	pathToSplit := stripPrepend[1]
+	if pathToSplit[0] == '/' {
+		pathToSplit = pathToSplit[1:]
+	}
+
+	splitPath := strings.SplitN(pathToSplit, "/", 3)
+	if len(splitPath) != 3 {
+		return "", "", fmt.Errorf("Unable to construct bucket and path out of: %s", path)
+	}
+	return fmt.Sprintf("%s-%s.%s", splitPath[0], splitPath[1], awsBucketPostfix), splitPath[2], nil
+}
 
 // Get an environment variable or use a default value if not set
 func getEnvOrDefault(envName, defaultVal string, fatal bool) (envVal string) {
@@ -64,9 +87,12 @@ func getAllEnvVariables() {
 
 	// Get the AWS credentials
 	awsRegion = getEnvOrDefault("AWS_REGION", "eu-west-1", false)
-	awsBucket = getEnvOrDefault("AWS_BUCKET", "", true)
-	getEnvOrDefault("AWS_ACCESS_KEY_ID", "", true)
-	getEnvOrDefault("AWS_SECRET_ACCESS_KEY", "", true)
+	awsBucketPostfix = getEnvOrDefault("AWS_BUCKET_POSTFIX", "", true)
+	pathPrepend = getEnvOrDefault("PATH_PREPEND", "/", false)
+
+    // These would be mandatory in docker, but this code also needs to run using EC2 permissions
+	// getEnvOrDefault("AWS_ACCESS_KEY_ID", "", true)
+	// getEnvOrDefault("AWS_SECRET_ACCESS_KEY", "", true)
 
 	// Get the path for the healthFile and the time to cache
 	healthFile = getEnvOrDefault("HEALTH_FILE", ".rest-s3-proxy", false)
@@ -83,7 +109,10 @@ func getAllEnvVariables() {
 // Serve a request for a S3 file
 func serveS3File(w http.ResponseWriter, r *http.Request) {
 	var method = r.Method
-	var path = r.URL.Path[1:] // Remove the / from the start of the URL
+	awsBucket, path, err := splitToBucketAndPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "Error identifying bucket from Path", http.StatusBadRequest)
+	}
 
 	// A file with no path cannot be served
 	if path == "" {
@@ -101,24 +130,24 @@ func serveS3File(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Info.Println("Handling " + method + " request for '" + path + "'")
+	Info.Println("Handling " + method + " request for '" + path + "' in bucket '" + awsBucket + "'")
 
 	switch method {
 	case "GET":
-		serveGetS3File(path, w, r)
+		serveGetS3File(path, awsBucket, w, r)
 	case "PUT":
-		servePutS3File(path, w, r)
+		servePutS3File(path, awsBucket, w, r)
 	case "DELETE":
-		serveDeleteS3File(path, w, r)
+		serveDeleteS3File(path, awsBucket, w, r)
 	case "HEAD":
-		serveHeadS3File(path, w, r)
+		serveHeadS3File(path, awsBucket, w, r)
 	default:
 		http.Error(w, "Method "+method+" not supported", http.StatusMethodNotAllowed)
 	}
 }
 
 // Serve a HEAD request for a S3 file
-func serveHeadS3File(filePath string, w http.ResponseWriter, r *http.Request) {
+func serveHeadS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	input := &s3.HeadObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	etag := r.Header.Get("ETag")
 	if etag != "" {
@@ -143,8 +172,13 @@ func serveHealth(w http.ResponseWriter, r *http.Request) {
 		Info.Println("Making health check for path '" + healthFile + "'")
 
 		// Check that we have read permissions on the status file (we may not have listing permissions)
-		params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(healthFile)}
-		_, err := s3Session.GetObject(params)
+		awsBucket, path, err := splitToBucketAndPath(healthFile)
+		if handleHTTPException(healthFile, w, err) != nil {
+			Error.Println("Health check failed")
+			return
+		}
+		params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(path)}
+		_, err = s3Session.GetObject(params)
 
 		if handleHTTPException(healthFile, w, err) != nil {
 			Error.Println("Health check failed")
@@ -158,7 +192,7 @@ func serveHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // Serve a GET request for a S3 file
-func serveGetS3File(filePath string, w http.ResponseWriter, r *http.Request) {
+func serveGetS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	resp, err := s3Session.GetObject(params)
 
@@ -176,7 +210,7 @@ func serveGetS3File(filePath string, w http.ResponseWriter, r *http.Request) {
 }
 
 // Serve a PUT request for a S3 file
-func servePutS3File(filePath string, w http.ResponseWriter, r *http.Request) {
+func servePutS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	// Convert the uploaded body to a byte array TODO fix this for large sizes
 	b, err := ioutil.ReadAll(r.Body)
 
@@ -184,7 +218,20 @@ func servePutS3File(filePath string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	params := &s3.PutObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath), Body: bytes.NewReader(b)}
+	hashBytes := sha256.Sum256(b)
+
+	fileNameSplitByDots := strings.Split(filePath, ".")
+	fileExtension := fileNameSplitByDots[len(fileNameSplitByDots)-1]
+
+	fileNameSplitBySlashes := strings.Split(filePath, "/")
+	folder := strings.Join(fileNameSplitBySlashes[0:len(fileNameSplitBySlashes)-1], "/")
+
+	uploadFilename := fmt.Sprintf("%s/%x.%s", folder, hashBytes, fileExtension)
+	if uploadFilename[0] != '/' {
+		uploadFilename = "/" + uploadFilename
+	}
+
+	params := &s3.PutObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(uploadFilename), Body: bytes.NewReader(b)}
 
 	resp, err := s3Session.PutObject(params)
 
@@ -192,13 +239,14 @@ func servePutS3File(filePath string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", *resp.ETag)
+	w.Header().Set("X-File-URL", uploadFilename)
 
 	// File has been created TODO do not return a http.StatusCreated if the file was updated
-	http.Redirect(w, r, "/"+filePath, http.StatusCreated)
+	http.Redirect(w, r, uploadFilename, http.StatusCreated)
 }
 
 // Serve a DELETE request for a S3 file
-func serveDeleteS3File(filePath string, w http.ResponseWriter, r *http.Request) {
+func serveDeleteS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	params := &s3.DeleteObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	_, err := s3Session.DeleteObject(params)
 
