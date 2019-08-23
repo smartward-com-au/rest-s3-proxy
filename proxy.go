@@ -90,7 +90,7 @@ func getAllEnvVariables() {
 	awsBucketPostfix = getEnvOrDefault("AWS_BUCKET_POSTFIX", "", true)
 	pathPrepend = getEnvOrDefault("PATH_PREPEND", "/", false)
 
-    // These would be mandatory in docker, but this code also needs to run using EC2 permissions
+	// These would be mandatory in docker, but this code also needs to run using EC2 permissions
 	// getEnvOrDefault("AWS_ACCESS_KEY_ID", "", true)
 	// getEnvOrDefault("AWS_SECRET_ACCESS_KEY", "", true)
 
@@ -240,6 +240,7 @@ func servePutS3File(filePath string, awsBucket string, w http.ResponseWriter, r 
 	}
 	w.Header().Set("ETag", *resp.ETag)
 	w.Header().Set("X-File-URL", uploadFilename)
+	w.Header().Set("Location", uploadFilename)
 
 	// File has been created TODO do not return a http.StatusCreated if the file was updated
 	http.Redirect(w, r, uploadFilename, http.StatusCreated)
