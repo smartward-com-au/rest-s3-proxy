@@ -90,7 +90,7 @@ func getAllEnvVariables() {
 	awsBucketPostfix = getEnvOrDefault("AWS_BUCKET_POSTFIX", "", true)
 	pathPrepend = getEnvOrDefault("PATH_PREPEND", "/", false)
 
-    // These would be mandatory in docker, but this code also needs to run using EC2 permissions
+	// These would be mandatory in docker, but this code also needs to run using EC2 permissions
 	// getEnvOrDefault("AWS_ACCESS_KEY_ID", "", true)
 	// getEnvOrDefault("AWS_SECRET_ACCESS_KEY", "", true)
 
@@ -195,6 +195,7 @@ func serveHealth(w http.ResponseWriter, r *http.Request) {
 func serveGetS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	resp, err := s3Session.GetObject(params)
+	defer resp.Body.Close()
 
 	if handleHTTPException(filePath, w, err) != nil {
 		return
