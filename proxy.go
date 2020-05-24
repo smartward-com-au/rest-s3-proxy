@@ -196,10 +196,13 @@ func serveGetS3File(filePath string, awsBucket string, w http.ResponseWriter, r 
 	params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	resp, err := s3Session.GetObject(params)
 
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+
 	if handleHTTPException(filePath, w, err) != nil {
 		return
 	}
-	defer resp.Body.Close()
 
 	w.Header().Set("Content-Type", *resp.ContentType)
 	w.Header().Set("Last-Modified", resp.LastModified.String())
