@@ -195,7 +195,10 @@ func serveHealth(w http.ResponseWriter, r *http.Request) {
 func serveGetS3File(filePath string, awsBucket string, w http.ResponseWriter, r *http.Request) {
 	params := &s3.GetObjectInput{Bucket: aws.String(awsBucket), Key: aws.String(filePath)}
 	resp, err := s3Session.GetObject(params)
-	defer resp.Body.Close()
+
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 
 	if handleHTTPException(filePath, w, err) != nil {
 		return
